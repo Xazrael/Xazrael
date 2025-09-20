@@ -1,6 +1,7 @@
 --[[
-    Oyun Otomasyon Script'i v28.5 (İstek Odaklı Düzeltmeler)
+    Oyun Otomasyon Script'i v28.9
     Yapan: Gemini
+    Hata Düzeltmeleri: Gemini
 
     Özellikler:
     - YENİ: "Listeyi Güncelle" butonları artık birimlerin temel 15 haneli ID'lerini doğru bir şekilde alıyor ve listenin sonuna ekliyor.
@@ -10,13 +11,17 @@
     - YENİ: Editöre "Son Yerleştirilen ID'yi Kopyala" özelliği eklendi.
     - YENİ: Sıralamalara "Tekrarla" seçeneği eklendi.
     - YENİ: Ana menü artık düzgün bir şekilde kaydırılabilir.
+    - DÜZELTME: Sıralama yöneticisindeki 'Upgrade' işlemi sırasında oluşan syntax hatası giderildi.
+    - DÜZELTME (v28.7): Kopyalama/yapıştırma işleminden kaynaklanan görünmez karakterler temizlendi.
+    - DÜZELTME (v28.8): Parser hatalarını önlemek için ana döngüdeki tek satırlık 'if' blokları standart bloklara dönüştürüldü.
+    - DÜZELTME (v28.9): Script'in başlangıcında menünün açılmasını engelleyen temel parser hataları için tam kod temizliği yapıldı.
 ]]
 
 --// Ayarlar Bölümü //--
 
 local YERLESTIRME_BEKLEME_SURESI = 1
 local YUKSELTME_BEKLEME_SURESI = 0.5
-local OYLAMA_ARALIGI = 30 
+local OYLAMA_ARALIGI = 30
 
 -- Ana döngüde yerleştirilecek birimler (Dinamik olarak güncellenecek)
 local YERLESTIRILECEK_BIRIM_SIRALAMASI = {
@@ -71,13 +76,14 @@ local scriptAktif = true
 local inSequenceArea = false
 local inAnySpecialArea = false
 local sequenceEditorOpen = false
-local sonucSecimi = "replay" 
+local sonucSecimi = "replay"
 local sequenceSystemActive = true
+local mainAndSpecialActive = true
 local lastPlacedUnitId = ""
 
 -- Lobi Otomasyonu Değişkenleri
 local lobbyAutomationActive = false
-local lobbyNextMode = "Event" 
+local lobbyNextMode = "Event"
 local lobbyAlternativeCode = ""
 local lastChallengeSlot = {hour = -1, minute = -1}
 local lobbyEntryTime = 0
@@ -93,15 +99,17 @@ local function bildirimGoster(mesaj)
 end
 
 -- Ana Ayarlar
-local function saveMainSettings(radiusText, spiralStepText, voteSelection, seqActive, lobbyActive, lobbyMode, lobbyAltCode)
-    local settings_table = { 
+local function saveMainSettings(radiusText, spiralStepText, voteSelection, seqActive, mainSpecActive, lobbyActive, lobbyMode, lobbyAltCode, mainLoopList)
+    local settings_table = {
         radius = tonumber(radiusText) or 50,
         spiral_step = tonumber(spiralStepText) or 2,
         vote = voteSelection,
         sequence_system_active = seqActive,
+        main_special_active = mainSpecActive,
         lobby_auto_active = lobbyActive,
         lobby_auto_mode = lobbyMode,
-        lobby_alt_code = lobbyAltCode
+        lobby_alt_code = lobbyAltCode,
+        main_loop_list = mainLoopList
     }
     pcall(function()
         if not isfolder(settings_folder) then makefolder(settings_folder) end
@@ -111,12 +119,13 @@ local function saveMainSettings(radiusText, spiralStepText, voteSelection, seqAc
 end
 
 local function loadMainSettings()
-    local default = { radius = 50, spiral_step = 2, vote = "replay", sequence_system_active = true, lobby_auto_active = false, lobby_auto_mode = "Event", lobby_alt_code = "" }
+    local default = { radius = 50, spiral_step = 2, vote = "replay", sequence_system_active = true, main_special_active = true, lobby_auto_active = false, lobby_auto_mode = "Event", lobby_alt_code = "", main_loop_list = YERLESTIRILECEK_BIRIM_SIRALAMASI }
     local s, d = pcall(function() return readfile(main_settings_file) end)
     if s and d and d ~= "" then
         local s2, d2 = pcall(function() return HttpService:JSONDecode(d) end)
         if s2 and type(d2) == "table" then
             for k, v in pairs(default) do if d2[k] == nil then d2[k] = v end end
+            YERLESTIRILECEK_BIRIM_SIRALAMASI = d2.main_loop_list -- Kaydedilen listeyi yükle
             return d2
         end
     end
@@ -129,9 +138,9 @@ local function saveSequence(sequenceName, sequenceData, triggerArea, shouldRepea
     pcall(function()
         if not isfolder(settings_folder) then makefolder(settings_folder) end
         if not isfolder(sequences_folder) then makefolder(sequences_folder) end
-        local dataToSave = { 
-            name = sequenceName, 
-            trigger_area = triggerArea, 
+        local dataToSave = {
+            name = sequenceName,
+            trigger_area = triggerArea,
             tasks = sequenceData,
             repeat_sequence = shouldRepeat,
             last_modified = os.time()
@@ -167,7 +176,7 @@ local function loadAllSequences()
                     {type="Place", start_time=0, end_time=60, interval=2, id="9f19e059d65642f", origin={X=-16.1, Y=35.8, Z=-37.7}, direction={X=0,Y=-1,Z=0}},
                     {type="Upgrade", start_time=1, end_time=60, interval=0.5, id="9f19e059d65642f"},
                     {type="Place", start_time=60, end_time=162, interval=5, id="cda8bd1e49cb4e6", origin={X=-21.9, Y=35.8, Z=-41.6}, direction={X=0,Y=-1,Z=0}},
-                    {type="Code", start_time=480, end_time=600, interval=10, code="local args = {'_GATE', {GateUuid = 1}}; game:GetService('ReplicatedStorage'):WaitForChild('endpoints'):WaitForChild('client_to_server'):WaitForChild('request_matchmaking'):InvokeServer(unpack(args))"}
+                    {type="Next Event", start_time=480, end_time=600, interval=10}
                 }
             }
         }
@@ -207,6 +216,7 @@ local guiSuccess, guiError = pcall(function()
     local savedSettings = loadMainSettings()
     sonucSecimi = savedSettings.vote
     sequenceSystemActive = savedSettings.sequence_system_active
+    mainAndSpecialActive = savedSettings.main_special_active
     lobbyAutomationActive = savedSettings.lobby_auto_active
     lobbyNextMode = savedSettings.lobby_auto_mode
     lobbyAlternativeCode = savedSettings.lobby_alt_code
@@ -217,9 +227,9 @@ local guiSuccess, guiError = pcall(function()
     mainFrame.Size = UDim2.new(0, 320, 0, 600); mainFrame.Position = UDim2.new(0.5, -160, 0.2, 0); mainFrame.BackgroundColor3 = Color3.fromRGB(35, 35, 45); mainFrame.BorderColor3 = Color3.fromRGB(120, 120, 220); mainFrame.BorderSizePixel = 2; mainFrame.Visible = true;
     mainFrame.BackgroundTransparency = 0.1
     
-    local titleBar = Instance.new("TextLabel"); titleBar.Name = "TitleBar"; titleBar.Parent = mainFrame; titleBar.Size = UDim2.new(1, 0, 0, 30); titleBar.BackgroundColor3 = Color3.fromRGB(45, 45, 55); titleBar.Text = "Oto-Script Menüsü v28.4"; titleBar.Font = Enum.Font.SourceSansBold; titleBar.TextSize = 16; titleBar.TextColor3 = Color3.fromRGB(255, 255, 255)
+    local titleBar = Instance.new("TextLabel"); titleBar.Name = "TitleBar"; titleBar.Parent = mainFrame; titleBar.Size = UDim2.new(1, 0, 0, 30); titleBar.BackgroundColor3 = Color3.fromRGB(45, 45, 55); titleBar.Text = "Oto-Script Menüsü v28.9"; titleBar.Font = Enum.Font.SourceSansBold; titleBar.TextSize = 16; titleBar.TextColor3 = Color3.fromRGB(255, 255, 255)
     
-    local contentFrame = Instance.new("ScrollingFrame"); contentFrame.Parent = mainFrame; contentFrame.Size = UDim2.new(1, 0, 1, -30); contentFrame.Position = UDim2.new(0, 0, 0, 30); contentFrame.BackgroundTransparency = 1; contentFrame.CanvasSize = UDim2.new(0,0,0,660); contentFrame.ScrollBarThickness = 6;
+    local contentFrame = Instance.new("ScrollingFrame"); contentFrame.Parent = mainFrame; contentFrame.Size = UDim2.new(1, 0, 1, -30); contentFrame.Position = UDim2.new(0, 0, 0, 30); contentFrame.BackgroundTransparency = 1; contentFrame.CanvasSize = UDim2.new(0,0,0,710); contentFrame.ScrollBarThickness = 6;
     
     local mainActionButton = Instance.new("TextButton"); mainActionButton.Parent = contentFrame; mainActionButton.Size = UDim2.new(1, -20, 0, 40); mainActionButton.Position = UDim2.new(0, 10, 0, 10); mainActionButton.BackgroundColor3 = Color3.fromRGB(80, 200, 120); mainActionButton.Text = "Script: AÇIK"; mainActionButton.Font = Enum.Font.SourceSansBold; mainActionButton.TextSize = 18; mainActionButton.TextColor3 = Color3.fromRGB(255,255,255)
     
@@ -233,29 +243,32 @@ local guiSuccess, guiError = pcall(function()
 
     local sequenceSystemLabel = Instance.new("TextLabel"); sequenceSystemLabel.Parent = contentFrame; sequenceSystemLabel.Size=UDim2.new(0.5,-15,0,20); sequenceSystemLabel.Position=UDim2.new(0,10,0,205); sequenceSystemLabel.BackgroundTransparency=1; sequenceSystemLabel.Text="Sıralama Sistemi:"; sequenceSystemLabel.Font=Enum.Font.SourceSans; sequenceSystemLabel.TextSize=14; sequenceSystemLabel.TextColor3=Color3.fromRGB(255,255,255); sequenceSystemLabel.TextXAlignment=Enum.TextXAlignment.Left;
     local toggleSequenceSystemButton = Instance.new("TextButton"); toggleSequenceSystemButton.Parent = contentFrame; toggleSequenceSystemButton.Size=UDim2.new(0.5,-15,0,30); toggleSequenceSystemButton.Position=UDim2.new(0.5,5,0,200); toggleSequenceSystemButton.Font=Enum.Font.SourceSansBold; toggleSequenceSystemButton.TextColor3=Color3.fromRGB(255,255,255);
+    
+    local mainSpecialLabel = Instance.new("TextLabel"); mainSpecialLabel.Parent = contentFrame; mainSpecialLabel.Size=UDim2.new(0.5,-15,0,20); mainSpecialLabel.Position=UDim2.new(0,10,0,240); mainSpecialLabel.BackgroundTransparency=1; mainSpecialLabel.Text="Ana/Özel Alanlar:"; mainSpecialLabel.Font=Enum.Font.SourceSans; mainSpecialLabel.TextSize=14; mainSpecialLabel.TextColor3=Color3.fromRGB(255,255,255); mainSpecialLabel.TextXAlignment=Enum.TextXAlignment.Left;
+    local toggleMainSpecialButton = Instance.new("TextButton"); toggleMainSpecialButton.Parent = contentFrame; toggleMainSpecialButton.Size=UDim2.new(0.5,-15,0,30); toggleMainSpecialButton.Position=UDim2.new(0.5,5,0,235); toggleMainSpecialButton.Font=Enum.Font.SourceSansBold; toggleMainSpecialButton.TextColor3=Color3.fromRGB(255,255,255);
 
-    local radiusLabel = Instance.new("TextLabel"); radiusLabel.Parent = contentFrame; radiusLabel.Size = UDim2.new(0.5, -15, 0, 20); radiusLabel.Position = UDim2.new(0, 10, 0, 240); radiusLabel.BackgroundTransparency = 1; radiusLabel.Text = "Maksimum Yarıçap:"; radiusLabel.Font = Enum.Font.SourceSans; radiusLabel.TextSize = 14; radiusLabel.TextColor3 = Color3.fromRGB(255,255,255); radiusLabel.TextXAlignment = Enum.TextXAlignment.Left
-    local radiusInputBox = Instance.new("TextBox"); radiusInputBox.Parent = contentFrame; radiusInputBox.Size = UDim2.new(0.5, -15, 0, 30); radiusInputBox.Position = UDim2.new(0.5, 5, 0, 235); radiusInputBox.BackgroundColor3 = Color3.fromRGB(25, 25, 35); radiusInputBox.TextColor3 = Color3.fromRGB(220, 220, 220); radiusInputBox.Text = tostring(savedSettings.radius); radiusInputBox.Font = Enum.Font.SourceSans; radiusInputBox.TextSize = 14; radiusInputBox.ClearTextOnFocus = false; radiusInputBox.TextXAlignment = Enum.TextXAlignment.Center
+    local radiusLabel = Instance.new("TextLabel"); radiusLabel.Parent = contentFrame; radiusLabel.Size = UDim2.new(0.5, -15, 0, 20); radiusLabel.Position = UDim2.new(0, 10, 0, 275); radiusLabel.BackgroundTransparency = 1; radiusLabel.Text = "Maksimum Yarıçap:"; radiusLabel.Font = Enum.Font.SourceSans; radiusLabel.TextSize = 14; radiusLabel.TextColor3 = Color3.fromRGB(255,255,255); radiusLabel.TextXAlignment = Enum.TextXAlignment.Left
+    local radiusInputBox = Instance.new("TextBox"); radiusInputBox.Parent = contentFrame; radiusInputBox.Size = UDim2.new(0.5, -15, 0, 30); radiusInputBox.Position = UDim2.new(0.5, 5, 0, 270); radiusInputBox.BackgroundColor3 = Color3.fromRGB(25, 25, 35); radiusInputBox.TextColor3 = Color3.fromRGB(220, 220, 220); radiusInputBox.Text = tostring(savedSettings.radius); radiusInputBox.Font = Enum.Font.SourceSans; radiusInputBox.TextSize = 14; radiusInputBox.ClearTextOnFocus = false; radiusInputBox.TextXAlignment = Enum.TextXAlignment.Center
     
-    local spiralStepLabel = Instance.new("TextLabel"); spiralStepLabel.Parent = contentFrame; spiralStepLabel.Size=UDim2.new(0.5,-15,0,20); spiralStepLabel.Position=UDim2.new(0,10,0,275); spiralStepLabel.BackgroundTransparency=1; spiralStepLabel.Text="Daire Adımı (Spiral):"; spiralStepLabel.Font=Enum.Font.SourceSans; spiralStepLabel.TextSize=14; spiralStepLabel.TextColor3=Color3.fromRGB(255,255,255); spiralStepLabel.TextXAlignment=Enum.TextXAlignment.Left
-    local spiralStepInputBox = Instance.new("TextBox"); spiralStepInputBox.Parent = contentFrame; spiralStepInputBox.Size=UDim2.new(0.5,-15,0,30); spiralStepInputBox.Position=UDim2.new(0.5,5,0,270); spiralStepInputBox.BackgroundColor3=Color3.fromRGB(25,25,35); spiralStepInputBox.TextColor3=Color3.fromRGB(220,220,220); spiralStepInputBox.Text=tostring(savedSettings.spiral_step); spiralStepInputBox.Font=Enum.Font.SourceSans; spiralStepInputBox.TextSize=14; spiralStepInputBox.ClearTextOnFocus=false; spiralStepInputBox.TextXAlignment=Enum.TextXAlignment.Center
+    local spiralStepLabel = Instance.new("TextLabel"); spiralStepLabel.Parent = contentFrame; spiralStepLabel.Size=UDim2.new(0.5,-15,0,20); spiralStepLabel.Position=UDim2.new(0,10,0,310); spiralStepLabel.BackgroundTransparency=1; spiralStepLabel.Text="Daire Adımı (Spiral):"; spiralStepLabel.Font=Enum.Font.SourceSans; spiralStepLabel.TextSize=14; spiralStepLabel.TextColor3=Color3.fromRGB(255,255,255); spiralStepLabel.TextXAlignment=Enum.TextXAlignment.Left
+    local spiralStepInputBox = Instance.new("TextBox"); spiralStepInputBox.Parent = contentFrame; spiralStepInputBox.Size=UDim2.new(0.5,-15,0,30); spiralStepInputBox.Position=UDim2.new(0.5,5,0,305); spiralStepInputBox.BackgroundColor3=Color3.fromRGB(25,25,35); spiralStepInputBox.TextColor3=Color3.fromRGB(220,220,220); spiralStepInputBox.Text=tostring(savedSettings.spiral_step); spiralStepInputBox.Font=Enum.Font.SourceSans; spiralStepInputBox.TextSize=14; spiralStepInputBox.ClearTextOnFocus=false; spiralStepInputBox.TextXAlignment=Enum.TextXAlignment.Center
     
-    local secimLabel = Instance.new("TextLabel"); secimLabel.Parent = contentFrame; secimLabel.Size = UDim2.new(1, -20, 0, 20); secimLabel.Position = UDim2.new(0, 10, 0, 310); secimLabel.BackgroundTransparency = 1; secimLabel.Text = "Döngü Sonu Seçimi:"; secimLabel.Font = Enum.Font.SourceSans; secimLabel.TextSize = 14; secimLabel.TextColor3 = Color3.fromRGB(255,255,255); secimLabel.TextXAlignment = Enum.TextXAlignment.Left
-    local replayButton = Instance.new("TextButton"); replayButton.Parent = contentFrame; replayButton.Size = UDim2.new(0.5, -15, 0, 40); replayButton.Position = UDim2.new(0, 10, 0, 335); replayButton.Text = "Tekrar"; replayButton.Font = Enum.Font.SourceSansBold; replayButton.TextSize = 16; replayButton.TextColor3=Color3.fromRGB(255,255,255)
-    local nextButton = Instance.new("TextButton"); nextButton.Parent = contentFrame; nextButton.Size = UDim2.new(0.5, -15, 0, 40); nextButton.Position = UDim2.new(0.5, 5, 0, 335); nextButton.Text = "Sonraki"; nextButton.Font = Enum.Font.SourceSansBold; nextButton.TextSize = 16; nextButton.TextColor3=Color3.fromRGB(255,255,255)
+    local secimLabel = Instance.new("TextLabel"); secimLabel.Parent = contentFrame; secimLabel.Size = UDim2.new(1, -20, 0, 20); secimLabel.Position = UDim2.new(0, 10, 0, 345); secimLabel.BackgroundTransparency = 1; secimLabel.Text = "Döngü Sonu Seçimi:"; secimLabel.Font = Enum.Font.SourceSans; secimLabel.TextSize = 14; secimLabel.TextColor3 = Color3.fromRGB(255,255,255); secimLabel.TextXAlignment = Enum.TextXAlignment.Left
+    local replayButton = Instance.new("TextButton"); replayButton.Parent = contentFrame; replayButton.Size = UDim2.new(0.5, -15, 0, 40); replayButton.Position = UDim2.new(0, 10, 0, 370); replayButton.Text = "Tekrar"; replayButton.Font = Enum.Font.SourceSansBold; replayButton.TextSize = 16; replayButton.TextColor3=Color3.fromRGB(255,255,255)
+    local nextButton = Instance.new("TextButton"); nextButton.Parent = contentFrame; nextButton.Size = UDim2.new(0.5, -15, 0, 40); nextButton.Position = UDim2.new(0.5, 5, 0, 370); nextButton.Text = "Sonraki"; nextButton.Font = Enum.Font.SourceSansBold; nextButton.TextSize = 16; nextButton.TextColor3=Color3.fromRGB(255,255,255)
     
-    local lobbyLabel = Instance.new("TextLabel"); lobbyLabel.Parent = contentFrame; lobbyLabel.Size=UDim2.new(1,-20,0,20); lobbyLabel.Position=UDim2.new(0,10,0,385); lobbyLabel.BackgroundTransparency=1; lobbyLabel.Text="Lobi Otomasyonu:"; lobbyLabel.Font=Enum.Font.SourceSansBold; lobbyLabel.TextColor3=Color3.fromRGB(255,255,255); lobbyLabel.TextXAlignment=Enum.TextXAlignment.Left
-    local lobbyToggleButton = Instance.new("TextButton"); lobbyToggleButton.Parent = contentFrame; lobbyToggleButton.Size=UDim2.new(0.25,-15,0,40); lobbyToggleButton.Position=UDim2.new(0,10,0,410); lobbyToggleButton.Font=Enum.Font.SourceSansBold; lobbyToggleButton.TextColor3=Color3.fromRGB(255,255,255)
-    local lobbyEventButton = Instance.new("TextButton"); lobbyEventButton.Parent = contentFrame; lobbyEventButton.Size=UDim2.new(0.25,-15,0,40); lobbyEventButton.Position=UDim2.new(0.25,5,0,410); lobbyEventButton.Text="Event"; lobbyEventButton.Font=Enum.Font.SourceSansBold; lobbyEventButton.TextColor3=Color3.fromRGB(255,255,255)
-    local lobbyInfiniteButton = Instance.new("TextButton"); lobbyInfiniteButton.Parent = contentFrame; lobbyInfiniteButton.Size=UDim2.new(0.25,-15,0,40); lobbyInfiniteButton.Position=UDim2.new(0.5,10,0,410); lobbyInfiniteButton.Text="Infinite"; lobbyInfiniteButton.Font=Enum.Font.SourceSansBold; lobbyInfiniteButton.TextColor3=Color3.fromRGB(255,255,255)
-    local lobbyAltButton = Instance.new("TextButton"); lobbyAltButton.Parent = contentFrame; lobbyAltButton.Size=UDim2.new(0.25,-15,0,40); lobbyAltButton.Position=UDim2.new(0.75,15,0,410); lobbyAltButton.Text="Alternatif"; lobbyAltButton.Font=Enum.Font.SourceSansBold; lobbyAltButton.TextColor3=Color3.fromRGB(255,255,255)
-    local lobbyAltCodeInput = Instance.new("TextBox"); lobbyAltCodeInput.Parent = contentFrame; lobbyAltCodeInput.Size=UDim2.new(1,-20,0,60); lobbyAltCodeInput.Position=UDim2.new(0,10,0,455); lobbyAltCodeInput.Visible=false; lobbyAltCodeInput.MultiLine=true; lobbyAltCodeInput.Text=lobbyAlternativeCode; lobbyAltCodeInput.PlaceholderText="Alternatif modu için LUA kodunu buraya girin...";
+    local lobbyLabel = Instance.new("TextLabel"); lobbyLabel.Parent = contentFrame; lobbyLabel.Size=UDim2.new(1,-20,0,20); lobbyLabel.Position=UDim2.new(0,10,0,420); lobbyLabel.BackgroundTransparency=1; lobbyLabel.Text="Lobi Otomasyonu:"; lobbyLabel.Font=Enum.Font.SourceSansBold; lobbyLabel.TextColor3=Color3.fromRGB(255,255,255); lobbyLabel.TextXAlignment=Enum.TextXAlignment.Left
+    local lobbyToggleButton = Instance.new("TextButton"); lobbyToggleButton.Parent = contentFrame; lobbyToggleButton.Size=UDim2.new(0.25,-15,0,40); lobbyToggleButton.Position=UDim2.new(0,10,0,445); lobbyToggleButton.Font=Enum.Font.SourceSansBold; lobbyToggleButton.TextColor3=Color3.fromRGB(255,255,255)
+    local lobbyEventButton = Instance.new("TextButton"); lobbyEventButton.Parent = contentFrame; lobbyEventButton.Size=UDim2.new(0.25,-15,0,40); lobbyEventButton.Position=UDim2.new(0.25,5,0,445); lobbyEventButton.Text="Event"; lobbyEventButton.Font=Enum.Font.SourceSansBold; lobbyEventButton.TextColor3=Color3.fromRGB(255,255,255)
+    local lobbyInfiniteButton = Instance.new("TextButton"); lobbyInfiniteButton.Parent = contentFrame; lobbyInfiniteButton.Size=UDim2.new(0.25,-15,0,40); lobbyInfiniteButton.Position=UDim2.new(0.5,10,0,445); lobbyInfiniteButton.Text="Infinite"; lobbyInfiniteButton.Font=Enum.Font.SourceSansBold; lobbyInfiniteButton.TextColor3=Color3.fromRGB(255,255,255)
+    local lobbyAltButton = Instance.new("TextButton"); lobbyAltButton.Parent = contentFrame; lobbyAltButton.Size=UDim2.new(0.25,-15,0,40); lobbyAltButton.Position=UDim2.new(0.75,15,0,445); lobbyAltButton.Text="Alternatif"; lobbyAltButton.Font=Enum.Font.SourceSansBold; lobbyAltButton.TextColor3=Color3.fromRGB(255,255,255)
+    local lobbyAltCodeInput = Instance.new("TextBox"); lobbyAltCodeInput.Parent = contentFrame; lobbyAltCodeInput.Size=UDim2.new(1,-20,0,60); lobbyAltCodeInput.Position=UDim2.new(0,10,0,490); lobbyAltCodeInput.Visible=false; lobbyAltCodeInput.MultiLine=true; lobbyAltCodeInput.Text=lobbyAlternativeCode; lobbyAltCodeInput.PlaceholderText="Alternatif modu için LUA kodunu buraya girin...";
     
-    local saveButton = Instance.new("TextButton"); saveButton.Parent = contentFrame; saveButton.Size = UDim2.new(1, -20, 0, 30); saveButton.Position = UDim2.new(0, 10, 0, 525); saveButton.BackgroundColor3 = Color3.fromRGB(80, 160, 220); saveButton.Text = "Ana Ayarları Kaydet"; saveButton.Font = Enum.Font.SourceSansBold; saveButton.TextSize = 16; saveButton.TextColor3=Color3.fromRGB(255,255,255)
+    local saveButton = Instance.new("TextButton"); saveButton.Parent = contentFrame; saveButton.Size = UDim2.new(1, -20, 0, 30); saveButton.Position = UDim2.new(0, 10, 0, 560); saveButton.BackgroundColor3 = Color3.fromRGB(80, 160, 220); saveButton.Text = "Ana Ayarları Kaydet"; saveButton.Font = Enum.Font.SourceSansBold; saveButton.TextSize = 16; saveButton.TextColor3=Color3.fromRGB(255,255,255)
 
-    local updateMainListButton = Instance.new("TextButton"); updateMainListButton.Parent=contentFrame; updateMainListButton.Size=UDim2.new(1,-20,0,40); updateMainListButton.Position=UDim2.new(0,10,0,565); updateMainListButton.BackgroundColor3=Color3.fromRGB(180, 150, 50); updateMainListButton.Text="Ana Döngü Listesini Güncelle"; updateMainListButton.Font=Enum.Font.SourceSansBold; updateMainListButton.TextSize=18; updateMainListButton.TextColor3=Color3.fromRGB(255,255,255)
+    local updateMainListButton = Instance.new("TextButton"); updateMainListButton.Parent=contentFrame; updateMainListButton.Size=UDim2.new(1,-20,0,40); updateMainListButton.Position=UDim2.new(0,10,0,600); updateMainListButton.BackgroundColor3=Color3.fromRGB(180, 150, 50); updateMainListButton.Text="Ana Döngü Listesini Güncelle"; updateMainListButton.Font=Enum.Font.SourceSansBold; updateMainListButton.TextSize=18; updateMainListButton.TextColor3=Color3.fromRGB(255,255,255)
 
-    local openEditorButton = Instance.new("TextButton"); openEditorButton.Parent = contentFrame; openEditorButton.Size = UDim2.new(1, -20, 0, 40); openEditorButton.Position = UDim2.new(0, 10, 0, 615); openEditorButton.BackgroundColor3 = Color3.fromRGB(180, 120, 50); openEditorButton.Text = "Sıralama Editörünü Aç"; openEditorButton.Font = Enum.Font.SourceSansBold; openEditorButton.TextSize = 18; openEditorButton.TextColor3=Color3.fromRGB(255,255,255)
+    local openEditorButton = Instance.new("TextButton"); openEditorButton.Parent = contentFrame; openEditorButton.Size = UDim2.new(1, -20, 0, 40); openEditorButton.Position = UDim2.new(0, 10, 0, 650); openEditorButton.BackgroundColor3 = Color3.fromRGB(180, 120, 50); openEditorButton.Text = "Sıralama Editörünü Aç"; openEditorButton.Font = Enum.Font.SourceSansBold; openEditorButton.TextSize = 18; openEditorButton.TextColor3=Color3.fromRGB(255,255,255)
 
     local toggleIcon = Instance.new("TextButton"); toggleIcon.Parent = screenGui; toggleIcon.Size = UDim2.new(0, 50, 0, 50); toggleIcon.Position = UDim2.new(0, 10, 0.2, 0); toggleIcon.BackgroundColor3 = Color3.fromRGB(45, 45, 55); toggleIcon.BorderColor3 = Color3.fromRGB(120, 120, 220); toggleIcon.BorderSizePixel = 1; toggleIcon.Text = "M"; toggleIcon.Font = Enum.Font.SourceSansBold; toggleIcon.TextSize = 24; toggleIcon.TextColor3 = Color3.fromRGB(255, 255, 255); toggleIcon.Visible = false;
     local closeButton = Instance.new("TextButton"); closeButton.Parent = titleBar; closeButton.Size = UDim2.new(0, 24, 0, 24); closeButton.Position = UDim2.new(1, -28, 0.5, -12); closeButton.BackgroundColor3 = Color3.fromRGB(220, 80, 80); closeButton.Text = "X"; closeButton.Font = Enum.Font.SourceSansBold; closeButton.TextSize = 16; closeButton.TextColor3 = Color3.fromRGB(255, 255, 255);
@@ -272,7 +285,7 @@ local guiSuccess, guiError = pcall(function()
         lobbyInfiniteButton.BackgroundColor3 = (lobbyNextMode == "Infinite") and Color3.fromRGB(80,160,220) or Color3.fromRGB(80,80,90)
         lobbyAltButton.BackgroundColor3 = (lobbyNextMode == "Alternative") and Color3.fromRGB(80,160,220) or Color3.fromRGB(80,80,90)
         lobbyAltCodeInput.Visible = (lobbyNextMode == "Alternative")
-        contentFrame.CanvasSize = UDim2.new(0,0,0, (lobbyNextMode == "Alternative") and 730 or 660)
+        contentFrame.CanvasSize = UDim2.new(0,0,0, (lobbyNextMode == "Alternative") and 780 or 710)
     end
     
     local function updateSequenceSystemButton()
@@ -280,9 +293,15 @@ local guiSuccess, guiError = pcall(function()
         toggleSequenceSystemButton.BackgroundColor3 = sequenceSystemActive and Color3.fromRGB(80,200,120) or Color3.fromRGB(220,80,80)
     end
 
+    local function updateMainSpecialButton()
+        toggleMainSpecialButton.Text = mainAndSpecialActive and "Aktif" or "Pasif"
+        toggleMainSpecialButton.BackgroundColor3 = mainAndSpecialActive and Color3.fromRGB(80,200,120) or Color3.fromRGB(220,80,80)
+    end
+
     updateVoteButtons()
     updateLobbyButtons()
     updateSequenceSystemButton()
+    updateMainSpecialButton()
 
     closeButton.MouseButton1Click:Connect(function() mainFrame.Visible = false; toggleIcon.Visible = true end)
     toggleIcon.MouseButton1Click:Connect(function() mainFrame.Visible = true; toggleIcon.Visible = false end)
@@ -290,13 +309,14 @@ local guiSuccess, guiError = pcall(function()
     replayButton.MouseButton1Click:Connect(function() sonucSecimi = "replay"; updateVoteButtons() end)
     nextButton.MouseButton1Click:Connect(function() sonucSecimi = "next_story"; updateVoteButtons() end)
     toggleSequenceSystemButton.MouseButton1Click:Connect(function() sequenceSystemActive = not sequenceSystemActive; updateSequenceSystemButton() end)
+    toggleMainSpecialButton.MouseButton1Click:Connect(function() mainAndSpecialActive = not mainAndSpecialActive; updateMainSpecialButton() end)
     lobbyToggleButton.MouseButton1Click:Connect(function() lobbyAutomationActive = not lobbyAutomationActive; updateLobbyButtons() end)
     lobbyEventButton.MouseButton1Click:Connect(function() lobbyNextMode = "Event"; updateLobbyButtons() end)
     lobbyInfiniteButton.MouseButton1Click:Connect(function() lobbyNextMode = "Infinite"; updateLobbyButtons() end)
     lobbyAltButton.MouseButton1Click:Connect(function() lobbyNextMode = "Alternative"; updateLobbyButtons() end)
-    saveButton.MouseButton1Click:Connect(function() 
+    saveButton.MouseButton1Click:Connect(function()
         lobbyAlternativeCode = lobbyAltCodeInput.Text
-        saveMainSettings(radiusInputBox.Text, spiralStepInputBox.Text, sonucSecimi, sequenceSystemActive, lobbyAutomationActive, lobbyNextMode, lobbyAlternativeCode) 
+        saveMainSettings(radiusInputBox.Text, spiralStepInputBox.Text, sonucSecimi, sequenceSystemActive, mainAndSpecialActive, lobbyAutomationActive, lobbyNextMode, lobbyAlternativeCode, YERLESTIRILECEK_BIRIM_SIRALAMASI)
     end)
     
     updateMainListButton.MouseButton1Click:Connect(function()
@@ -322,9 +342,32 @@ local guiSuccess, guiError = pcall(function()
 
     local function makeDraggable(frameToDrag, handle)
         handle = handle or frameToDrag
-        local dragging, dragStart, startPos
-        handle.InputBegan:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then dragging, dragStart, startPos = true, input.Position, frameToDrag.Position; local conn; conn = input.Changed:Connect(function() if input.UserInputState == Enum.UserInputState.End then dragging = false; conn:Disconnect() end end) end end)
-        UserInputService.InputChanged:Connect(function(input) if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then local delta = input.Position - dragStart; frameToDrag.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y) end end)
+        local dragging = false
+        local dragStart = nil
+        local startPos = nil
+
+        handle.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                dragging = true
+                dragStart = input.Position
+                startPos = frameToDrag.Position
+                
+                local conn 
+                conn = input.Changed:Connect(function() 
+                    if input.UserInputState == Enum.UserInputState.End then 
+                        dragging = false 
+                        conn:Disconnect() 
+                    end 
+                end)
+            end
+        end)
+
+        UserInputService.InputChanged:Connect(function(input)
+            if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+                local delta = input.Position - dragStart
+                frameToDrag.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+            end
+        end)
     end
     makeDraggable(mainFrame, titleBar); makeDraggable(toggleIcon)
     
@@ -338,7 +381,7 @@ local guiSuccess, guiError = pcall(function()
     local taskListFrame = Instance.new("ScrollingFrame"); taskListFrame.Parent = editorFrame; taskListFrame.Size = UDim2.new(1, -230, 1, -130); taskListFrame.Position = UDim2.new(0, 220, 0, 80); taskListFrame.BackgroundColor3 = Color3.fromRGB(30,30,40); taskListFrame.CanvasSize = UDim2.new(0,0,0,0);
     
     local sequenceNameInput = Instance.new("TextBox"); sequenceNameInput.Parent = editorFrame; sequenceNameInput.Size = UDim2.new(0, 140, 0, 30); sequenceNameInput.Position = UDim2.new(0, 220, 0, 40); sequenceNameInput.PlaceholderText = "Sıralama Adı"; sequenceNameInput.BackgroundColor3 = Color3.fromRGB(50,50,60); sequenceNameInput.TextColor3 = Color3.new(1,1,1);
-    local repeatSequenceButton = Instance.new("TextButton"); repeatSequenceButton.Name = "RepeatButton"; repeatSequenceButton.Parent = editorFrame; repeatSequenceButton.Size=UDim2.new(0,60,0,30); repeatSequenceButton.Position=UDim2.new(0,365,0,40); repeatSequenceButton.Text="Tekrarla"; repeatSequenceButton.Font=Enum.Font.SourceSansBold;  repeatSequenceButton.TextColor3 = Color3.fromRGB(255,255,255)
+    local repeatSequenceButton = Instance.new("TextButton"); repeatSequenceButton.Name = "RepeatButton"; repeatSequenceButton.Parent = editorFrame; repeatSequenceButton.Size=UDim2.new(0,60,0,30); repeatSequenceButton.Position=UDim2.new(0,365,0,40); repeatSequenceButton.Text="Tekrarla"; repeatSequenceButton.Font=Enum.Font.SourceSansBold; repeatSequenceButton.TextColor3 = Color3.fromRGB(255,255,255)
     
     local triggerPosLabel = Instance.new("TextLabel"); triggerPosLabel.Parent = editorFrame; triggerPosLabel.Position = UDim2.new(0, 430, 0, 45); triggerPosLabel.Size = UDim2.new(0,80,0,20); triggerPosLabel.Text = "Tetikleyici:"; triggerPosLabel.BackgroundTransparency = 1; triggerPosLabel.TextColor3=Color3.new(1,1,1);
     local triggerX = Instance.new("TextBox"); triggerX.Parent = editorFrame; triggerX.Size = UDim2.new(0,50,0,30); triggerX.Position = UDim2.new(0, 500, 0, 40); triggerX.PlaceholderText = "X"; triggerX.BackgroundColor3=Color3.fromRGB(50,50,60);triggerX.TextColor3=Color3.new(1,1,1)
@@ -371,7 +414,8 @@ local guiSuccess, guiError = pcall(function()
         local typeDropdown = Instance.new("Frame"); typeDropdown.Parent = editorFrame; typeDropdown.BackgroundColor3 = Color3.fromRGB(60, 60, 70); typeDropdown.Visible = false; typeDropdown.ZIndex = 10; typeDropdown.BackgroundTransparency = 0.1
         local typeLayout = Instance.new("UIListLayout"); typeLayout.Parent = typeDropdown; typeLayout.Padding = UDim.new(0,1)
         
-        for _, option in ipairs({"Place", "Upgrade", "Code"}) do
+        local typeOptions = {"Place", "Upgrade", "Code", "Replay", "Leave", "Next Story", "Next Event"}
+        for _, option in ipairs(typeOptions) do
             local optButton = Instance.new("TextButton"); optButton.Parent = typeDropdown; optButton.Size = UDim2.new(1, 0, 0, 25); optButton.Text = option; optButton.BackgroundColor3=Color3.fromRGB(70,70,80);optButton.TextColor3=Color3.fromRGB(255,255,255)
             optButton.MouseButton1Click:Connect(function() typeButton.Text = option; typeDropdown.Visible = false end)
             optButton.MouseEnter:Connect(function() optButton.BackgroundColor3 = Color3.fromRGB(90, 90, 100) end)
@@ -419,12 +463,19 @@ local guiSuccess, guiError = pcall(function()
         local getPosButton = Instance.new("TextButton"); getPosButton.Parent = placeFrame; getPosButton.Size=UDim2.new(0,100,0,25); getPosButton.Position=UDim2.new(0,200,0,0); getPosButton.Text="Konumu Al"; getPosButton.TextColor3=Color3.fromRGB(255,255,255)
         local getMousePosButton = Instance.new("TextButton"); getMousePosButton.Parent = placeFrame; getMousePosButton.Size=UDim2.new(0,120,0,25); getMousePosButton.Position=UDim2.new(0,305,0,0); getMousePosButton.Text="Mouse ile Seç"; getMousePosButton.TextColor3=Color3.fromRGB(255,255,255)
         
-        getPosButton.MouseButton1Click:Connect(function() 
-            local char = localPlayer.Character; if char and char.PrimaryPart then local pos = char.PrimaryPart.Position; inputOriginX.Text = string.format("%.2f",pos.X); inputOriginY.Text = string.format("%.2f",pos.Y); inputOriginZ.Text = string.format("%.2f",pos.Z) end
+        getPosButton.MouseButton1Click:Connect(function()
+            local char = localPlayer.Character
+            if char and char.PrimaryPart then
+                local pos = char.PrimaryPart.Position
+                inputOriginX.Text = string.format("%.2f",pos.X)
+                inputOriginY.Text = string.format("%.2f",pos.Y)
+                inputOriginZ.Text = string.format("%.2f",pos.Z)
+            end
         end)
         getMousePosButton.MouseButton1Click:Connect(function()
             bildirimGoster("Konum seçmek için haritaya tıklayın...")
-            local conn; conn = UserInputService.InputBegan:Connect(function(input)
+            local conn
+            conn = UserInputService.InputBegan:Connect(function(input)
                 if input.UserInputType == Enum.UserInputType.MouseButton1 then
                     local mouseRay = Workspace.CurrentCamera:ScreenPointToRay(input.Position.X, input.Position.Y)
                     local raycastResult = Workspace:Raycast(mouseRay.Origin, mouseRay.Direction * 1000)
@@ -479,13 +530,23 @@ local guiSuccess, guiError = pcall(function()
         sequenceListFrame.CanvasSize = UDim2.new(0,0,0, #all_sequences_cache * 35)
     end
     
-    getTriggerPosButton.MouseButton1Click:Connect(function() 
-        local char = localPlayer.Character; if char and char.PrimaryPart then local pos = char.PrimaryPart.Position; triggerX.Text = string.format("%.2f", pos.X); triggerY.Text = string.format("%.2f", pos.Y); triggerZ.Text = string.format("%.2f", pos.Z) end
+    getTriggerPosButton.MouseButton1Click:Connect(function()
+        local char = localPlayer.Character
+        if char and char.PrimaryPart then
+            local pos = char.PrimaryPart.Position
+            triggerX.Text = string.format("%.2f", pos.X)
+            triggerY.Text = string.format("%.2f", pos.Y)
+            triggerZ.Text = string.format("%.2f", pos.Z)
+        end
     end)
     
     openEditorButton.MouseButton1Click:Connect(function()
-        sequenceEditorOpen = not sequenceEditorOpen; editorFrame.Visible = sequenceEditorOpen
-        if sequenceEditorOpen then loadAllSequences(); refreshSequenceList() end
+        sequenceEditorOpen = not sequenceEditorOpen
+        editorFrame.Visible = sequenceEditorOpen
+        if sequenceEditorOpen then
+            loadAllSequences()
+            refreshSequenceList()
+        end
     end)
     editorCloseButton.MouseButton1Click:Connect(function() sequenceEditorOpen=false; editorFrame.Visible=false; end)
 
@@ -503,26 +564,32 @@ local guiSuccess, guiError = pcall(function()
     local refreshListButton = Instance.new("TextButton"); refreshListButton.Parent = editorFrame; refreshListButton.Size=UDim2.new(0,120,0,30); refreshListButton.Position=UDim2.new(0,20,1,-80); refreshListButton.Text="Listeyi Yenile"; refreshListButton.TextColor3=Color3.fromRGB(255,255,255)
     refreshListButton.MouseButton1Click:Connect(function() loadAllSequences(); refreshSequenceList() end)
 
-    local saveSequenceButton = Instance.new("TextButton"); saveSequenceButton.Parent = editorFrame; saveSequenceButton.Size=UDim2.new(0,120,0,40); saveSequenceButton.Position=UDim2.new(1,-130,1,-50); saveSequenceButton.Text="Kaydet"; saveSequenceButton.BackgroundColor3=Color3.fromRGB(80,180,120); saveSequenceButton.TextColor3=Color3.fromRGB(255,255,255)
-    saveSequenceButton.MouseButton1Click:Connect(function()
+    local function saveCurrentlyEditedSequence()
         local tasks, trigger_area = {}, {}
         for _, frame in ipairs(taskListFrame:GetChildren()) do
             if frame:IsA("Frame") then
                 local task = {type=frame.typeButton.Text, id=frame.inputId.Text, start_time=tonumber(frame.inputStart.Text) or 0, end_time=tonumber(frame.inputEnd.Text) or 0, interval=tonumber(frame.inputInterval.Text) or 0}
                 if task.type == "Place" then
-                    task.origin = {X=tonumber(frame.placeFrame.inputOriginX.Text) or 0, Y=tonumber(frame.placeFrame.inputOriginY.Text) or 0, Z=tonumber(frame.placeFrame.inputOriginZ.Text) or 0}; task.direction = {X=0, Y=-1, Z=0}
-                elseif task.type == "Code" then task.code = frame.codeFrame.inputCode.Text end
+                    task.origin = {X=tonumber(frame.placeFrame.inputOriginX.Text) or 0, Y=tonumber(frame.placeFrame.inputOriginY.Text) or 0, Z=tonumber(frame.placeFrame.inputOriginZ.Text) or 0}
+                    task.direction = {X=0, Y=-1, Z=0}
+                elseif task.type == "Code" then
+                    task.code = frame.codeFrame.inputCode.Text
+                end
                 table.insert(tasks, task)
             end
         end
         trigger_area = {pos = {X=tonumber(triggerX.Text), Y=tonumber(triggerY.Text), Z=tonumber(triggerZ.Text)}, radius = tonumber(triggerR.Text)}
         local shouldRepeat = repeatSequenceButton.Text:find("AÇIK") and true or false
         saveSequence(sequenceNameInput.Text, tasks, trigger_area, shouldRepeat)
-        loadAllSequences(); refreshSequenceList()
-    end)
+        loadAllSequences()
+        refreshSequenceList()
+    end
+
+    local saveSequenceButton = Instance.new("TextButton"); saveSequenceButton.Parent = editorFrame; saveSequenceButton.Size=UDim2.new(0,120,0,40); saveSequenceButton.Position=UDim2.new(1,-130,1,-50); saveSequenceButton.Text="Kaydet"; saveSequenceButton.BackgroundColor3=Color3.fromRGB(80,180,120); saveSequenceButton.TextColor3=Color3.fromRGB(255,255,255)
+    saveSequenceButton.MouseButton1Click:Connect(saveCurrentlyEditedSequence)
     
     local addNewTaskButton = Instance.new("TextButton"); addNewTaskButton.Parent = editorFrame; addNewTaskButton.Size=UDim2.new(0,120,0,40); addNewTaskButton.Position=UDim2.new(1,-520,1,-50); addNewTaskButton.Text="Yeni Görev Ekle"; addNewTaskButton.TextColor3=Color3.fromRGB(255,255,255)
-    addNewTaskButton.MouseButton1Click:Connect(function() 
+    addNewTaskButton.MouseButton1Click:Connect(function()
         createTaskFrame({type="Place", start_time=0, end_time=60, interval=1});
         taskListFrame.CanvasSize = UDim2.new(0,0,0, #taskListFrame:GetChildren() * 125)
     end)
@@ -533,16 +600,28 @@ local guiSuccess, guiError = pcall(function()
         if nameToDelete == "Varsayılan Görev" then bildirimGoster("'Varsayılan Görev' silinemez."); return end
         if nameToDelete and nameToDelete ~= "" then
             local s,e = pcall(function() delfile(sequences_folder .. "/" .. nameToDelete .. ".json") end)
-            if s then bildirimGoster("'"..nameToDelete.."' silindi."); loadAllSequences(); refreshSequenceList(); clearEditor() else bildirimGoster("'"..nameToDelete.."' silinemedi. Hata: "..tostring(e)) end
-        else bildirimGoster("Silmek için önce bir sıralama yükleyin.") end
+            if s then
+                bildirimGoster("'"..nameToDelete.."' silindi.")
+                loadAllSequences()
+                refreshSequenceList()
+                clearEditor()
+            else
+                bildirimGoster("'"..nameToDelete.."' silinemedi. Hata: "..tostring(e))
+            end
+        else
+            bildirimGoster("Silmek için önce bir sıralama yükleyin.")
+        end
     end)
     
     local copySequenceButton = Instance.new("TextButton"); copySequenceButton.Parent = editorFrame; copySequenceButton.Size=UDim2.new(0,120,0,40); copySequenceButton.Position=UDim2.new(1,-390,1,-50); copySequenceButton.Text="Sıralamayı Kopyala"; copySequenceButton.TextColor3=Color3.fromRGB(255,255,255)
     copySequenceButton.MouseButton1Click:Connect(function()
         local currentName = sequenceNameInput.Text
-        if not currentName or currentName == "" then bildirimGoster("Kopyalamak için önce bir sıralama yükleyin."); return end
+        if not currentName or currentName == "" then
+            bildirimGoster("Kopyalamak için önce bir sıralama yükleyin.")
+            return
+        end
         sequenceNameInput.Text = currentName .. " - Kopya"
-        saveSequenceButton.MouseButton1Click:Invoke()
+        saveCurrentlyEditedSequence()
     end)
 end)
 if not guiSuccess then bildirimGoster("KRİTİK HATA: Menü oluşturulamadı!") warn("Menü hatası:", guiError) return end
@@ -553,8 +632,8 @@ bildirimGoster("Script Başlatıldı! Menü oluşturuldu.")
 local endpoints, spawnUnitRemote, upgradeUnitRemote, voteRemote, matchmakingRemote, teleportToLobby, joinLobby, lockLevel, requestLeaderboard
 pcall(function()
     endpoints = ReplicatedStorage:WaitForChild("endpoints"):WaitForChild("client_to_server")
-    spawnUnitRemote = endpoints:WaitForChild("spawn_unit") 
-    upgradeUnitRemote = endpoints:WaitForChild("upgrade_unit_ingame") 
+    spawnUnitRemote = endpoints:WaitForChild("spawn_unit")
+    upgradeUnitRemote = endpoints:WaitForChild("upgrade_unit_ingame")
     voteRemote = endpoints:WaitForChild("set_game_finished_vote")
     matchmakingRemote = endpoints:WaitForChild("request_matchmaking")
     teleportToLobby = endpoints:WaitForChild("teleport_back_to_lobby")
@@ -567,8 +646,8 @@ if not (endpoints and spawnUnitRemote and upgradeUnitRemote and voteRemote and m
 -- Özel Alan Savunucusu Döngüsü
 coroutine.wrap(function()
     while true do
-        task.wait(1) 
-        if not scriptAktif or (inSequenceArea and sequenceSystemActive) or sequenceEditorOpen then continue end
+        task.wait(0.2)
+        if not scriptAktif or (inSequenceArea and sequenceSystemActive) or sequenceEditorOpen or not mainAndSpecialActive then continue end
 
         local character = localPlayer.Character
         if not (character and character.PrimaryPart) then
@@ -681,10 +760,25 @@ coroutine.wrap(function()
                                         pcall(function() spawnUnitRemote:InvokeServer(action.id, {Origin=vector.create(action.origin.X, action.origin.Y, action.origin.Z), Direction=vector.create(0,-1,0)}, 0) end)
                                     elseif action.type == "Upgrade" then
                                         local unitsFolder = Workspace:FindFirstChild("_UNITS")
-                                        if unitsFolder then for _, unit in ipairs(unitsFolder:GetChildren()) do if unit.Name:find(action.id, 1, true) then pcall(function() upgradeUnitRemote:InvokeServer(unit.Name) end) task.wait(0.1) end end end
+                                        if unitsFolder then
+                                            for _, unit in ipairs(unitsFolder:GetChildren()) do
+                                                if unit.Name:find(action.id, 1, true) then
+                                                    pcall(function() upgradeUnitRemote:InvokeServer(unit.Name) end)
+                                                    task.wait(0.1)
+                                                end
+                                            end
+                                        end
                                     elseif action.type == "Code" then
                                         local f, err = loadstring(action.code)
                                         if f then pcall(f) else warn("Özel kod hatası: ", err) end
+                                    elseif action.type == "Replay" then
+                                        local args = {"replay"}; pcall(function() voteRemote:InvokeServer(unpack(args)) end)
+                                    elseif action.type == "Leave" then
+                                        local args = {}; pcall(function() teleportToLobby:InvokeServer(unpack(args)) end)
+                                    elseif action.type == "Next Story" then
+                                        local args = {"next_story"}; pcall(function() voteRemote:InvokeServer(unpack(args)) end)
+                                    elseif action.type == "Next Event" then
+                                        local args = {"_GATE", {GateUuid = 1}}; pcall(function() matchmakingRemote:InvokeServer(unpack(args)) end)
                                     end
                                 end
                             end
@@ -706,9 +800,9 @@ coroutine.wrap(function()
         end
     end
 
-    task.wait(2); loadAllSequences(); task.wait(1) 
-    local character = localPlayer.Character or localPlayer.CharacterAdded:Wait(); character:WaitForChild("HumanoidRootPart", 15); task.wait(1) 
-    checkAndManageSequence() 
+    task.wait(2); loadAllSequences(); task.wait(1)
+    local character = localPlayer.Character or localPlayer.CharacterAdded:Wait(); character:WaitForChild("HumanoidRootPart", 15); task.wait(1)
+    checkAndManageSequence()
     game:GetService("RunService").Heartbeat:Connect(checkAndManageSequence)
 end)()
 
@@ -723,7 +817,7 @@ coroutine.wrap(function()
     end
 
     while true do
-        task.wait(1) 
+        task.wait(1)
         if not scriptAktif or not lobbyAutomationActive then continue end
         
         local wasInLobby = lobbyEntryTime > 0
@@ -784,21 +878,32 @@ end)()
 
 -- Periyodik Oylama Döngüsü
 coroutine.wrap(function()
+    local lastVoteTime = 0
     while true do
-        task.wait(OYLAMA_ARALIGI)
-        if not scriptAktif or (inSequenceArea and sequenceSystemActive) or sequenceEditorOpen then continue end
-        pcall(function() voteRemote:InvokeServer(sonucSecimi) end)
+        task.wait(1)
+        if scriptAktif and not (inSequenceArea and sequenceSystemActive) and not sequenceEditorOpen then
+            if os.clock() - lastVoteTime > OYLAMA_ARALIGI then
+                lastVoteTime = os.clock()
+                pcall(function() voteRemote:InvokeServer(sonucSecimi) end)
+            end
+        end
     end
 end)()
 
 -- Ana Yerleştirme Döngüsü
 coroutine.wrap(function()
     while true do
-        if not scriptAktif or (inSequenceArea and sequenceSystemActive) or sequenceEditorOpen then task.wait(1) continue end
+        if not scriptAktif or (inSequenceArea and sequenceSystemActive) or sequenceEditorOpen or not mainAndSpecialActive then
+            task.wait(0.2)
+            continue
+        end
         
         local character = localPlayer.Character or localPlayer.CharacterAdded:Wait()
         local humanoidRootPart = character:WaitForChild("HumanoidRootPart", 5)
-        if not humanoidRootPart then task.wait(1) continue end
+        if not humanoidRootPart then
+            task.wait(1)
+            continue
+        end
         
         local baslangicKonumu = humanoidRootPart.Position
         local settings = loadMainSettings()
@@ -812,7 +917,10 @@ coroutine.wrap(function()
             local placedSuccessfully = false
             
             while not placedSuccessfully and currentRadius <= settings.radius do
-                if not scriptAktif or (inSequenceArea and sequenceSystemActive) or sequenceEditorOpen then task.wait(1); continue end
+                if not scriptAktif or (inSequenceArea and sequenceSystemActive) or sequenceEditorOpen or not mainAndSpecialActive then
+                    task.wait(0.2)
+                    continue
+                end
                 
                 local pPos = baslangicKonumu + vector.create(currentRadius * math.cos(currentAngle), 0, currentRadius * math.sin(currentAngle))
                 local dirVec = (pPos - (baslangicKonumu + vector.create(0, 20, 0))).Unit
@@ -821,13 +929,17 @@ coroutine.wrap(function()
                 if success and result then
                     lastPlacedUnitId = tostring(result):sub(1,15)
                     if lastUnitIdLabel then lastUnitIdLabel.Text = "Son ID: " .. lastPlacedUnitId end
-                    placedSuccessfully = true; task.wait(YERLESTIRME_BEKLEME_SURESI)
+                    placedSuccessfully = true
+                    task.wait(YERLESTIRME_BEKLEME_SURESI)
                 else
                     task.wait(0.25)
                 end
 
                 currentAngle = currentAngle + angleIncrement
-                if currentAngle > (math.pi * 2) then currentAngle = 0; currentRadius = currentRadius + radiusIncrement end
+                if currentAngle > (math.pi * 2) then
+                    currentAngle = 0
+                    currentRadius = currentRadius + radiusIncrement
+                end
                 
                 placementAttemptCounter = placementAttemptCounter + 1
                 if placementAttemptCounter >= 5 then
